@@ -10,6 +10,7 @@
   "description": "Keeps the battery of a kiosk that never leaves its charger between two levels, so it does not swell. Stops charging at the upper level and starts again at the lower one through the kernel's charging switch. Needs Shizuku running as root. The limits are also Home Assistant selects.",
   "author": "syphernl",
   "license": "Apache-2.0",
+  "icon": "icon.png",
   "capabilities": [
     "entities",
     "shizuku"
