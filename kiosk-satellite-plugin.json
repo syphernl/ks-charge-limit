@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "charge-limit",
+  "name": "Charge Limit",
+  "version": "0.0.0",
+  "apiVersion": 1,
+  "minAndroidSdk": 24,
+  "minAppVersion": "2026.10.44",
+  "entryClass": "nl.syphernl.kiosk.chargelimit.ChargeLimitPlugin",
+  "description": "Keeps the battery of a kiosk that never leaves its charger between two levels, so it does not swell. Stops charging at the upper level and starts again at the lower one through the kernel's charging switch. Needs Shizuku running as root. The limits are also Home Assistant selects.",
+  "author": "syphernl",
+  "license": "Apache-2.0",
+  "capabilities": [
+    "entities",
+    "shizuku"
+  ],
+  "settings": [
+    {
+      "key": "enabled",
+      "type": "boolean",
+      "title": "Limit charging",
+      "default": true,
+      "group": "Charge limit",
+      "description": "Off lets the battery charge normally again. Turn it off before you remove the plugin, so charging does not stay stopped."
+    },
+    {
+      "key": "stopAt",
+      "type": "number",
+      "title": "Stop charging at",
+      "default": 85,
+      "min": 50,
+      "max": 100,
+      "step": 5,
+      "unit": "%",
+      "group": "Charge limit"
+    },
+    {
+      "key": "resumeAt",
+      "type": "number",
+      "title": "Resume charging at",
+      "default": 50,
+      "min": 20,
+      "max": 95,
+      "step": 5,
+      "unit": "%",
+      "group": "Charge limit",
+      "description": "Must stay below Stop charging at. A higher value moves the other one up."
+    }
+  ],
+  "groups": [
+    {
+      "title": "Charge limit",
+      "readingsTitle": "Battery",
+      "readings": [
+        "text_sensor.status",
+        "binary_sensor.paused"
+      ]
+    }
+  ]
+}
