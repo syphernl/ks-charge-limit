@@ -12,7 +12,8 @@
           "path": "kiosk-satellite-plugin.json",
           "jsonpath": "$.version"
         }
-      ]
+      ],
+      "bump-minor-pre-major": true
     }
   }
 }
