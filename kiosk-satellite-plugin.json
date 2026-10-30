@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "charge-limit",
   "name": "Charge Limit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "apiVersion": 1,
   "minAndroidSdk": 24,
   "minAppVersion": "2026.10.44",

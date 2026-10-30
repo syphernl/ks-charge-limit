@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/syphernl/ks-charge-limit/compare/0.1.0...0.1.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* findings from the code review of 0.1.0 ([21c7596](https://github.com/syphernl/ks-charge-limit/commit/21c75961d07f5a3751c151bd610017ce06ec483d))
+
 ## 0.1.0 (2026-10-30)
 
 
