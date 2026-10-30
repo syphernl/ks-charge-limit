@@ -34,7 +34,13 @@ Once a minute the plugin reads the battery level from `/sys/class/power_supply/b
 
 The defaults are 85% and 50%. **Resume charging at** always stays below **Stop charging at**: raising one past the other moves the other along by 5%.
 
-Turning **Limit charging** off writes the "charge" value once and then leaves the switch alone.
+Some switches cannot be read back, so on its first check after a start the plugin also stops charging when the level is between the two limits. From then on it knows the state of the switch.
+
+Raising **Stop charging at** while charging is paused starts charging again right away, up to the new level.
+
+Turning **Limit charging** off writes the "charge" value once and then leaves the switch alone. A start with the limit already off does the same, in case an earlier session left charging stopped.
+
+When a switch exists but refuses the write, the plugin tries the next one in the list.
 
 **Turn the limit off before you disable or remove the plugin.** Kiosk Satellite revokes a plugin's access before it stops it, so the plugin cannot release the switch on its way out. If charging was stopped at that moment, it stays stopped until something writes the switch again or the device reboots. The same holds while Kiosk Satellite itself is not running. A low battery alert in Home Assistant catches both.
 

@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 package nl.syphernl.kiosk.chargelimit;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -30,12 +34,14 @@ public final class ChargeLimitPlugin implements KioskPlugin {
     static final String SH = "/system/bin/sh";
     static final String DETECT = "for f in \"$@\"; do [ -e \"$f\" ] && { echo \"$f\"; exit 0; }; done; exit 1";
     /**
-     * Arguments: battery folder, switch file, on value, off value, mode (limit or release), stop level, resume
-     * level. Prints the level, what it did and the kernel's charging status.
+     * Arguments: battery folder, switch file, on value, off value, mode, stop level, resume level. Mode "charge"
+     * turns charging on. "limit" turns it on at or below the resume level and off at or above the stop level.
+     * "start" does the same but also stops in between, because some switches cannot be read back and the
+     * plugin has to know where it stands. Prints the level, what it did and the kernel's charging status.
      */
     static final String TICK = "cap=$(cat \"$1/capacity\") || exit 3; act=keep; "
-        + "if [ \"$5\" = release ] || [ \"$cap\" -le \"$7\" ]; then echo \"$3\" > \"$2\" || exit 4; act=charging; "
-        + "elif [ \"$cap\" -ge \"$6\" ]; then echo \"$4\" > \"$2\" || exit 4; act=paused; fi; "
+        + "if [ \"$5\" = charge ] || [ \"$cap\" -le \"$7\" ]; then echo \"$3\" > \"$2\" || exit 4; act=charging; "
+        + "elif [ \"$5\" = start ] || [ \"$cap\" -ge \"$6\" ]; then echo \"$4\" > \"$2\" || exit 4; act=paused; fi; "
         + "echo \"$cap $act $(cat \"$1/status\")\"";
     static final long INTERVAL_SECONDS = 60;
     static final int TIMEOUT_MS = 5000;
@@ -46,13 +52,21 @@ public final class ChargeLimitPlugin implements KioskPlugin {
     private PluginHost host;
     private ScheduledExecutorService scheduler;
     private final Map<String, Object> settings = new LinkedHashMap<>();
+    private final Set<String> broken = new HashSet<>();
     private boolean enabled;
     private int stopAt;
     private int resumeAt;
     private String[] control;
-    private boolean release;
+    /** Write "charge" once: the limit was turned off, starts off, or Stop charging at went up while paused. */
+    private boolean charge;
+    private boolean started;
     private boolean busy;
+    /** Something changed while a command ran, so run again when it returns. */
+    private boolean dirty;
+    private int session;
     private Boolean paused;
+    /** Counts requests for an early tick, so tests can see one without a scheduler. */
+    int requested;
 
     public ChargeLimitPlugin() { this(true); }
 
@@ -62,13 +76,19 @@ public final class ChargeLimitPlugin implements KioskPlugin {
     @Override
     public synchronized void start(PluginHost host, Map<String, Object> settings) {
         this.host = host;
+        session++;
+        busy = false;
         control = null;
-        release = false;
+        broken.clear();
+        started = false;
         paused = null;
+        stopAt = 0;
+        resumeAt = 0;
         host.publishTextSensor("status", "Status", null);
         host.publishBinarySensor("paused", "Charging paused", "", null);
         configure(settings);
-        if (!enabled) report("Off, charges normally", false);
+        // A session that starts with the limit off may follow one that left charging stopped.
+        charge = !enabled;
         if (!schedule) return;
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleWithFixedDelay(this::tick, 2, INTERVAL_SECONDS, TimeUnit.SECONDS);
@@ -76,16 +96,13 @@ public final class ChargeLimitPlugin implements KioskPlugin {
 
     @Override
     public synchronized void configure(Map<String, Object> values) {
-        boolean was = enabled;
         settings.clear();
         settings.putAll(values);
-        enabled = !Boolean.FALSE.equals(values.get("enabled"));
-        stopAt = level(values.get("stopAt"), 85);
-        resumeAt = level(values.get("resumeAt"), 50);
-        if (resumeAt >= stopAt) resumeAt = stopAt - 5;
-        // Turning the limit off charges once, then leaves the switch to whatever else manages it.
-        if (was && !enabled) release = true;
-        if (enabled) release = false;
+        setEnabled(!Boolean.FALSE.equals(values.get("enabled")));
+        int stop = level(values.get("stopAt"), 85);
+        int resume = level(values.get("resumeAt"), 50);
+        setLevels(stop, resume, resume != resumeAt && stop == stopAt);
+        if (stop != stopAt || resume != resumeAt) save();
         publishControls();
         soon();
     }
@@ -98,34 +115,68 @@ public final class ChargeLimitPlugin implements KioskPlugin {
     @Override
     public synchronized void onEvent(String event, Map<String, Object> payload) {
         if ("switch.limit".equals(event)) {
-            boolean on = Boolean.TRUE.equals(payload.get("on"));
-            release = enabled && !on;
-            enabled = on;
-            settings.put("enabled", on);
+            setEnabled(Boolean.TRUE.equals(payload.get("on")));
         } else if ("select.stop_at".equals(event)) {
-            stopAt = parse((String) payload.get("option"));
-            if (resumeAt >= stopAt) resumeAt = stopAt - 5;
+            setLevels(parse((String) payload.get("option")), resumeAt, false);
         } else if ("select.resume_at".equals(event)) {
-            resumeAt = parse((String) payload.get("option"));
-            if (resumeAt >= stopAt) stopAt = resumeAt + 5;
-        } else if (!"shizuku.state".equals(event)) {
+            setLevels(stopAt, parse((String) payload.get("option")), true);
+        } else if ("shizuku.state".equals(event)) {
+            soon();
+            return;
+        } else {
             return;
         }
-        if (!"shizuku.state".equals(event)) {
-            settings.put("stopAt", stopAt);
-            settings.put("resumeAt", resumeAt);
-            host.saveSettings(new LinkedHashMap<>(settings));
-            publishControls();
-        }
+        save();
+        publishControls();
         soon();
     }
 
     @Override
-    public synchronized void stop() {
+    public void stop() {
         // The host is already revoked, so the switch stays as it is. Turning the limit off first releases it.
-        if (scheduler != null) scheduler.shutdownNow();
-        scheduler = null;
-        host = null;
+        ScheduledExecutorService stopping;
+        synchronized (this) {
+            stopping = scheduler;
+            scheduler = null;
+            host = null;
+            session++;
+            busy = false;
+        }
+        if (stopping == null) return;
+        stopping.shutdownNow();
+        try {
+            stopping.awaitTermination(2, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Turning the limit off charges once, then leaves the switch to whatever else manages it. */
+    private void setEnabled(boolean on) {
+        if (enabled && !on) charge = true;
+        if (on) charge = false;
+        enabled = on;
+        dirty = true;
+    }
+
+    /** The changed level wins: a higher resume level pushes stop up, a lower stop level pushes resume down. */
+    private void setLevels(int stop, int resume, boolean resumeChanged) {
+        if (resume >= stop) {
+            if (resumeChanged) stop = Math.min(100, resume + 5);
+            else resume = stop - 5;
+        }
+        // Topping up past the old limit should not wait for the battery to drain to the resume level.
+        if (enabled && stop > stopAt && Boolean.TRUE.equals(paused)) charge = true;
+        stopAt = stop;
+        resumeAt = resume;
+        dirty = true;
+    }
+
+    private void save() {
+        settings.put("enabled", enabled);
+        settings.put("stopAt", stopAt);
+        settings.put("resumeAt", resumeAt);
+        if (host != null) host.saveSettings(new LinkedHashMap<>(settings));
     }
 
     private void publishControls() {
@@ -136,12 +187,17 @@ public final class ChargeLimitPlugin implements KioskPlugin {
     }
 
     private void soon() {
+        requested++;
         if (scheduler != null) scheduler.schedule(this::tick, 300, TimeUnit.MILLISECONDS);
     }
 
     synchronized void tick() {
         if (host == null || busy) return;
-        if (!enabled && !release) return;
+        dirty = false;
+        if (!enabled && !charge) {
+            report("Off, charges normally", false);
+            return;
+        }
         Map<String, Object> state = host.shizukuState();
         if (!"ready".equals(state.get("status"))) {
             report("No Shizuku access for Kiosk Satellite", true);
@@ -152,32 +208,41 @@ public final class ChargeLimitPlugin implements KioskPlugin {
             report("Shizuku runs without root, so it cannot switch charging", true);
             return;
         }
+        final String mode = control == null ? null : charge ? "charge" : started ? "limit" : "start";
         String[] command;
-        if (control == null) {
-            command = new String[CONTROLS.length + 4];
-            command[0] = SH;
-            command[1] = "-c";
-            command[2] = DETECT;
-            command[3] = "sh";
-            for (int i = 0; i < CONTROLS.length; i++) command[i + 4] = CONTROLS[i][0];
+        if (mode == null) {
+            List<String> args = new ArrayList<>();
+            args.add(SH);
+            args.add("-c");
+            args.add(DETECT);
+            args.add("sh");
+            for (String[] candidate : CONTROLS) if (!broken.contains(candidate[0])) args.add(candidate[0]);
+            command = args.toArray(new String[0]);
         } else {
-            command = new String[] {SH, "-c", TICK, "sh", BATTERY, control[0], control[1], control[2],
-                release ? "release" : "limit", String.valueOf(stopAt), String.valueOf(resumeAt)};
+            command = new String[] {SH, "-c", TICK, "sh", BATTERY, control[0], control[1], control[2], mode,
+                String.valueOf(stopAt), String.valueOf(resumeAt)};
         }
         busy = true;
-        final boolean detecting = control == null;
-        final boolean releasing = release;
+        final int current = session;
         try {
-            host.executeShizuku(command, TIMEOUT_MS, (ok, data, error) -> done(detecting, releasing, ok, data, error));
+            host.executeShizuku(command, TIMEOUT_MS, (ok, data, error) -> done(current, mode, ok, data, error));
         } catch (RuntimeException e) {
             busy = false;
             report(e.getMessage(), true);
         }
     }
 
-    private synchronized void done(boolean detecting, boolean releasing, boolean ok, Object data, String error) {
+    private synchronized void done(int from, String mode, boolean ok, Object data, String error) {
+        if (from != session || host == null) return;
         busy = false;
-        if (host == null) return;
+        try {
+            handle(mode, ok, data, error);
+        } finally {
+            if (dirty) soon();
+        }
+    }
+
+    private void handle(String mode, boolean ok, Object data, String error) {
         if (!ok) {
             report(error, true);
             return;
@@ -185,33 +250,45 @@ public final class ChargeLimitPlugin implements KioskPlugin {
         Map<?, ?> result = (Map<?, ?>) data;
         int exit = ((Number) result.get("exitCode")).intValue();
         String out = String.valueOf(result.get("stdout")).trim();
-        if (detecting) {
+        if (mode == null) {
             control = exit == 0 ? control(out) : null;
-            if (control == null) report("This device has no known charging switch", true);
+            if (control == null) report("This device has no charging switch that works", true);
             else soon();
             return;
         }
-        if (exit != 0) {
-            report(exit == 4 ? "Could not write " + control[0] : "Could not read the battery level", true);
+        if (exit == 3) {
+            report("Could not read the battery level", true);
             return;
         }
-        if (releasing) release = false;
+        if (exit == 4) {
+            // Some kernels list a switch they cannot write. Try the next one.
+            report("Could not write " + control[0], true);
+            broken.add(control[0]);
+            control = null;
+            soon();
+            return;
+        }
+        if (exit != 0) {
+            report("Command failed with exit code " + exit + ": " + String.valueOf(result.get("stderr")).trim(), true);
+            return;
+        }
         Reading reading = Reading.parse(out);
         if (reading == null) {
             report("Unexpected output: " + out, true);
             return;
         }
+        if ("charge".equals(mode)) charge = false;
+        else started = true;
         if ("paused".equals(reading.action)) paused = true;
         else if ("charging".equals(reading.action)) paused = false;
-        host.publishBinarySensor("paused", "Charging paused", "", releasing ? Boolean.FALSE : paused);
-        report(describe(reading, releasing), false);
+        host.publishBinarySensor("paused", "Charging paused", "", enabled ? paused : Boolean.FALSE);
+        report(describe(reading), false);
     }
 
-    String describe(Reading reading, boolean releasing) {
-        if (releasing || !enabled) return "Off, charges normally (" + reading.level + "%)";
+    String describe(Reading reading) {
+        if (!enabled) return "Off, charges normally (" + reading.level + "%)";
         if (Boolean.TRUE.equals(paused)) return "Paused at " + reading.level + "%, resumes at " + resumeAt + "%";
-        if (Boolean.FALSE.equals(paused)) return "Charging to " + stopAt + "% (" + reading.level + "%)";
-        return reading.level + "%, " + reading.status;
+        return "Charging to " + stopAt + "% (" + reading.level + "%)";
     }
 
     private void report(String message, boolean error) {
