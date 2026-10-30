@@ -12,6 +12,10 @@ It replaces a separate charge limiter app and its boot script. The limits show u
 
 ## Installation
 
+Use the button below to open the plugin in your Kiosk Satellite and install it.
+
+[![Install in Kiosk Satellite](https://kiosksatellite.com/img/badges/plugin-add.svg)](https://kiosksatellite.com/redirect/plugin/?repository=syphernl/ks-charge-limit)
+
 ### Manual
 
 1. Open **Settings > Plugin Manager** in Kiosk Satellite and turn on **Enable Plugins**.
