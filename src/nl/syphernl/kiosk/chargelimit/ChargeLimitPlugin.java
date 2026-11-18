@@ -22,8 +22,11 @@ import me.jxl.kiosk.plugins.PluginHost;
  */
 public final class ChargeLimitPlugin implements KioskPlugin {
     static final String BATTERY = "/sys/class/power_supply/battery";
+    static final String HDX_BATTERY = "/sys/class/power_supply/bq27x41";
+    static final String HDX_CHARGE = "/sys/class/power_supply/smb349_ac/device/charge_enable";
     /** Known switches: the file, the value that lets the battery charge and the value that stops it. */
     static final String[][] CONTROLS = {
+        {HDX_CHARGE, "1", "0"}, // Amazon Fire HDX 8.9 (apollo)
         {BATTERY + "/device/Charging_Enable", "1", "0"}, // Amazon Fire HD 8 (karnak)
         {BATTERY + "/charging_enable", "1", "0"}, // Lenovo Tab M10 FHD Plus (TB-X606F)
         {BATTERY + "/charging_enabled", "1", "0"},
@@ -31,6 +34,10 @@ public final class ChargeLimitPlugin implements KioskPlugin {
         {BATTERY + "/input_suspend", "0", "1"},
         {BATTERY + "/store_mode", "0", "1"},
     };
+    static String batteryFor(String[] control) {
+        return HDX_CHARGE.equals(control[0]) ? HDX_BATTERY : BATTERY;
+    }
+
     static final String SH = "/system/bin/sh";
     static final String DETECT = "for f in \"$@\"; do [ -e \"$f\" ] && { echo \"$f\"; exit 0; }; done; exit 1";
     /**
@@ -219,7 +226,7 @@ public final class ChargeLimitPlugin implements KioskPlugin {
             for (String[] candidate : CONTROLS) if (!broken.contains(candidate[0])) args.add(candidate[0]);
             command = args.toArray(new String[0]);
         } else {
-            command = new String[] {SH, "-c", TICK, "sh", BATTERY, control[0], control[1], control[2], mode,
+            command = new String[] {SH, "-c", TICK, "sh", batteryFor(control), control[0], control[1], control[2], mode,
                 String.valueOf(stopAt), String.valueOf(resumeAt)};
         }
         busy = true;
