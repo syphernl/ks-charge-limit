@@ -74,7 +74,21 @@ public final class ChargeLimitPluginTest {
         return plugin;
     }
 
+
+    static void testFireHdxPaths() {
+        String[] control = ChargeLimitPlugin.control(
+            ChargeLimitPlugin.HDX_CHARGE);
+
+        check(control != null, "Fire HDX charging switch detected");
+        check("1".equals(control[1]), "Fire HDX enable value");
+        check("0".equals(control[2]), "Fire HDX disable value");
+        check(ChargeLimitPlugin.HDX_BATTERY.equals(
+            ChargeLimitPlugin.batteryFor(control)),
+            "Fire HDX battery directory");
+    }
+
     public static void main(String[] args) throws Exception {
+        testFireHdxPaths();
         tickScriptStopsAndResumes();
         detectScriptPicksTheFirstFile();
         firstTickPausesInBetween();
